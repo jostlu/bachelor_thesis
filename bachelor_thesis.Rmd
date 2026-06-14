@@ -1,0 +1,325 @@
+---
+title: "Bachelor_thesis"
+author: "Luis"
+date: "2026-06-14"
+output: html_document
+---
+
+This R markdown document is part of the bachelor thesis "On Why Scoring Functions Cannot Assess Tail Properties: A More Detailed Analysis". All derivations and explanations can be found there.
+
+## Storing the distributions
+
+A distribution $G \in \mathcal{F}_\text{exp}$ is stored as a data frame with entries lambda and theta. lambda is a vector of the $\lambda_i$ which make up the convex combination. theta is a vector of the $\theta_i$ which are the rates of the "pure" exponential distributions of $G$.
+
+We take G to be the "true" distribution, i.e. the distribution our realisations come from. F is a distribution with heavier tail as requested in Theorem 4.4.
+
+```{r distributions}
+G <- data.frame(
+  lambda <- c(0.2,0.3,0.5),
+  theta<- c(1,3,10)
+)
+
+F <- data.frame(
+  lambda <- c(1),
+  theta <- c(0.5)
+)
+```
+
+A function that gives us a convex combination of the distributions
+
+```{r convex combination of two distributions}
+convex_combine <- function(F,G, lambda_conv_comb){
+  # define new distribution by the convex combination of F and G
+  F_lambda <- data.frame(
+    lambda <- c(lambda_conv_comb*F$lambda, (1-lambda_conv_comb)*G$lambda),
+    theta <- c(F$theta, G$theta)
+  )
+  colnames(F_lambda) <- c("lambda", "theta")
+  
+  return(F_lambda)
+}
+```
+
+## Sampling
+
+Get a sample of size $n$ from the distribution $G \in \mathcal{F}_\text{exp}$
+
+```{r sampling from G}
+get_sample <- function(G, n){
+  
+  l <- length(G$lambda)
+  
+  # initialise the result vector
+  result <- c()
+  
+  # Similar to Remark 3.1, sampling from a convex combination of 
+  # exponential distributions is like choosing which exponential distribution 
+  # to choose from via a multinomial distribution
+  pick <- rmultinom(1, size = n, prob= G$lambda)
+  
+  for (i in 1:l){
+    # sample as many realisations from the corresponding distribution
+    # and append to the result vector
+    result <- c(result, rexp(pick[i], rate = G$theta[i]))
+  }
+  return (result)
+}
+```
+
+## CRPS and the CRPS_bar approximation
+
+The formula to calculate the CRPS for $G \in \mathcal{F}_\text{exp}$ and $y \in [0,\infty)$ $$\text{CRPS}(G,y) = y + \sum_{i=1}^n \frac{2\lambda_i}{\theta_i}(e^{-\theta_i y} - 1) +  \sum_{i,j=1}^n \frac{\lambda_i\lambda_j}{\theta_i+\theta_j} = y+ \sum_{i=1}^n \left( \frac{2\lambda_i}{\theta_i}(e^{-\theta_i y} - 1) +  \sum_{j=1}^n \frac{\lambda_i\lambda_j}{\theta_i+\theta_j}\right) $$
+
+```{r CRPS}
+CRPS <- function(G,y){
+  result <- y
+  for (i in 1:length(G$lambda)){
+    result <- result + 2*G$lambda[i]/G$theta[i]*(exp(-G$theta[i]*y)-1)
+    
+    # the double sum term
+    for (j in 1:length(G$lambda)){
+      result <- result + G$lambda[i]*G$lambda[j]/(G$theta[i]+G$theta[j])
+    }
+  }
+  return(result)
+}
+```
+
+Estimate $$\overline{\text{CRPS}}(F,G) \approx \frac{1}{n}\sum_{i=1}^n \text{CRPS}(F,y_i) \text{ where the } y_i \text{ are i.i.d. realisations of } Y \sim G$$
+
+```{r CRPS approximation}
+# Estimate CRPS_bar(F,G) using n i.i.d realisations
+CRPS_bar_hat <- function(F,G, n=1000000){
+  sample <- get_sample(G, n)
+  score <- mean(CRPS(F, sample))
+  return(score)
+}
+```
+
+And a version to apply to a list of distributions
+
+```{r vectorised CRPS_bar_hat}
+# From a list of distributions, get a vector of their estimated CRPS_bar
+CRPS_bar_hat_vec <- function(list_distr, G_true, n=1000000){
+  #initialise the result vector
+  result <- c()
+  
+  for (i in list_distr){
+    result <- c(result, CRPS_bar_hat(i, G_true, n))
+  }
+  
+  return(result)
+}
+```
+
+## Probability density function
+
+Get the probability density function of a distribution
+
+```{r pdf}
+# Higher order function taking a distribution as input and
+# returning the pdf of this distribution
+pdf <- function(G){
+  G_pdf <- function(x){
+    result <- 0
+    for (i in 1:length(G$lambda)){
+      result <- result + G$lambda[i]*G$theta[i]*exp(-G$theta[i]*x)
+    }
+    return(result)
+  }
+  return(G_pdf)
+}
+```
+
+Get the logarithm of the probability density function of a distribution
+
+```{r log(pdf)}
+# Higher order function taking a distribution as input and
+# returning the logarithm of the pdf of this distribution
+log_pdf <- function(G){
+  G_log_pdf <- function(x){
+    result <- 0
+    for (i in 1:length(G$lambda)){
+      result <- result + G$lambda[i]*G$theta[i]*exp(-G$theta[i]*x)
+    }
+    return(log(result))
+  }
+  return(G_log_pdf)
+}
+```
+
+## Plotting
+
+To visually compare the distributions, we plot their pdfs
+
+```{r plot}
+# Plots the pdfs of a list of distributions in one plot
+plot_distr <-  function(list_of_distributions){
+  
+  # get first distribution back as data frame
+  distr_1 <- as.data.frame(list_of_distributions[[1]])
+  colnames(distr_1) <- c("lambda", "theta")
+  # take its pdf
+  pdf_distr_1 <- pdf(distr_1)
+  # plot the first distribution
+  curve(pdf_distr_1, xlim=c(0,3), ylim = c(0,1.5), ylab = "pdf", col=1)
+  
+  # plot the remaining pdfs in case there are any
+  if (length(list_of_distributions) > 1){
+    for (i in 2:length(list_of_distributions)){
+      # get i-th distribution back as data frame
+      distr_i <- as.data.frame(list_of_distributions[i])
+      colnames(distr_i) <- c("lambda", "theta")
+      # take its pdf
+      pdf_distr_i <- pdf(distr_i)
+      # plot the i-th distribution
+      curve(pdf_distr_i, add = TRUE, col = i)
+    }
+  }
+  
+  # add title if needed
+  # title("Probability density function of the considered distributions")
+  
+  # prepare legend
+  lege <- names(list_of_distributions)
+  if (length(lege) == 0){
+    lege <- 1:length(list_of_distributions)
+  }
+  # add legend
+  legend("topright", legend=lege, col=1:length(list_of_distributions), lty=1, lwd =2,
+         ncol = ceiling(length(list_of_distributions)/5) , cex = 0.75)
+}
+```
+
+To visually compare the tails of the distributions, we plot the log of their pdfs
+
+```{r log plot}
+# Plots the logarithm of the pdfs of a list of distributions in one plot
+plot_log_distr <-  function(list_of_distributions){
+  
+  # get first distribution back as data frame
+  distr_1 <- as.data.frame(list_of_distributions[[1]])
+  colnames(distr_1) <- c("lambda", "theta")
+  # take its log(pdf)
+  log_pdf_distr_1 <- log_pdf(distr_1)
+  # plot the first distribution
+  curve(log_pdf_distr_1, xlim=c(0,3), ylim = c(-3,0), ylab = "log(pdf)", col=1)
+  
+  # plot the remaining log(pdf)s in case there are any
+  if (length(list_of_distributions) > 1){
+    for (i in 2:length(list_of_distributions)){
+      # get i-th distribution back as data frame
+      distr_i <- as.data.frame(list_of_distributions[i])
+      colnames(distr_i) <- c("lambda", "theta")
+      # take its log(pdf)
+      log_pdf_distr_i <- log_pdf(distr_i)
+      # plot the i-th distribution
+      curve(log_pdf_distr_i, add = TRUE, col = i)
+    }
+  }
+  
+  # add title if needed
+  # title("Logarithm of the pdf of the considered distributions")
+  
+  # prepare legend
+  lege <- names(list_of_distributions)
+  if (length(lege) == 0){
+    lege <- 1:length(list_of_distributions)
+  }
+  # add legend
+    legend("topright", legend=lege, col=1:length(list_of_distributions), lty=1, lwd =2, 
+            ncol = ceiling(length(list_of_distributions)/5), cex = 0.75)
+}
+```
+
+## Illustration of Theorem 4.4
+
+First, define the distributions we want to work with
+
+```{r define distributions}
+F_0.9   <- convex_combine(F, G, 0.9)
+F_0.8   <- convex_combine(F, G, 0.8)
+F_0.7   <- convex_combine(F, G, 0.7)
+F_0.6   <- convex_combine(F, G, 0.6)
+F_0.5   <- convex_combine(F, G, 0.5)
+F_0.4   <- convex_combine(F, G, 0.4)
+F_0.3   <- convex_combine(F, G, 0.3)
+F_0.2   <- convex_combine(F, G, 0.2)
+F_0.15  <- convex_combine(F, G, 0.15)
+F_0.1   <- convex_combine(F, G, 0.1)
+F_0.05  <- convex_combine(F, G, 0.05)
+F_0.04  <- convex_combine(F, G, 0.04)
+F_0.03  <- convex_combine(F, G, 0.03)
+F_0.02  <- convex_combine(F, G, 0.02)
+F_0.01  <- convex_combine(F, G, 0.01)
+F_0.005 <- convex_combine(F, G, 0.005)
+```
+
+Make a list of the distributions
+
+```{r make list}
+distributions <- list(
+  "l = 1"     = F,
+  "l = 0.9"   = F_0.9,
+  "l = 0.8"   = F_0.8,
+  "l = 0.7"   = F_0.7,
+  "l = 0.6"   = F_0.6,
+  "l = 0.5"   = F_0.5,
+  "l = 0.4"   = F_0.4,
+  "l = 0.3"   = F_0.3,
+  "l = 0.2"   = F_0.2,
+  "l = 0.15"  = F_0.15,
+  "l = 0.1"   = F_0.1,
+  "l = 0.05"  = F_0.05,
+  "l = 0.04"  = F_0.04,
+  "l = 0.03"  = F_0.03,
+  "l = 0.02"  = F_0.02,
+  "l = 0.01"  = F_0.01,
+  "l = 0.005" = F_0.005,
+  "l = 0"     = G
+)
+
+# Define a vector of the lambdas used for plotting
+lambda_vector <- c(1,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.15,
+                   0.1,0.05,0.04,0.03,0.02,0.01,0.005,0)
+```
+
+Plot the pdfs and the log(pdf)s of the distributions
+
+```{r}
+plot_distr(distributions)
+title("Probability density function of F_l = l*F + (1-l)*G")
+plot_log_distr(distributions)
+title("Logarithm of the probability density function of F_l = l*F + (1-l)*G")
+```
+
+We calculate the estimation
+
+```{r calculate estimation}
+# number of observations we want to compare the distributions to
+n_obs <- 100000000
+
+CRPS_bar_hat_vector <- CRPS_bar_hat_vec(distributions, G, n_obs)
+```
+
+Plot the estimation and close ups of the interesting regions
+
+```{r plot the estimated CRPS}
+plot(lambda_vector, CRPS_bar_hat_vector, 
+     ylab = "Estimated CRPS_bar(F_l, G)", xlab=("l"), pch = 4)
+title("Estimated CRPS_bar of l*F + (1-l)*G")
+
+plot(lambda_vector, CRPS_bar_hat_vector, 
+     ylab = "Estimated CRPS_bar(F_l, G)", xlab=("l"), 
+     xlim=c(0,0.2), ylim = c(0.22,0.26),pch = 4)
+# add a line to better differentiate
+abline(h = CRPS_bar_hat_vector[length(CRPS_bar_hat_vector)])
+title("Estimated CRPS_bar of l*F + (1-l)*G")
+
+plot(lambda_vector, CRPS_bar_hat_vector, 
+     ylab = "Estimated CRPS_bar(F_l, G)", xlab=("l"), 
+     xlim=c(0,0.05), ylim = c(0.23,0.235),pch = 4)
+# add a line to better differentiate
+abline(h = CRPS_bar_hat_vector[length(CRPS_bar_hat_vector)])
+title("Estimated CRPS_bar of l*F + (1-l)*G")
+```
